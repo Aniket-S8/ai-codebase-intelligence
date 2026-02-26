@@ -20,6 +20,17 @@ This system is built from scratch without orchestration frameworks (e.g., LangCh
 
 # 🏗 Architecture
 
+- User Query
+- ↓
+- Embedding Model (Local)
+- ↓
+- FAISS Vector Search
+- ↓
+- Retrieve Relevant Code Chunks
+- ↓
+- Local LLM (Ollama)
+- ↓
+- Structured AI Response
 
 ---
 
@@ -44,3 +55,4 @@ This system is built from scratch without orchestration frameworks (e.g., LangCh
 - Docker  
 - VS Code  
 - Git & GitHub  
+
