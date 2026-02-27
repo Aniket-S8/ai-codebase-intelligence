@@ -6,6 +6,7 @@ import shutil
 import uuid
 
 from app.database import engine, get_db
+from app.chunker import extract_java_chunks
 from app import models
 
 app = FastAPI()
@@ -66,16 +67,12 @@ def upload_repository(
 
     # Scan and register Java files
     for root, dirs, files in os.walk(repo_path):
-        # Skip unwanted directories
         dirs[:] = [d for d in dirs if d not in [".git", "node_modules", "target", "__pycache__"]]
 
         for filename in files:
             if filename.endswith(".java"):
                 full_path = os.path.join(root, filename)
-
-                # Relative path stored in DB
                 relative_path = os.path.relpath(full_path, repo_path)
-
                 file_size = os.path.getsize(full_path)
 
                 db_file = models.File(
@@ -86,6 +83,25 @@ def upload_repository(
                 )
 
                 db.add(db_file)
+                db.commit()
+                db.refresh(db_file)
+
+                # Read file content
+                with open(full_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                chunks = extract_java_chunks(content)
+
+                for chunk in chunks:
+                    db_chunk = models.CodeChunk(
+                        content=chunk["content"],
+                        class_name=chunk["class_name"],
+                        method_name=chunk["method_name"],
+                        start_line=chunk["start_line"],
+                        end_line=chunk["end_line"],
+                        file_id=db_file.id
+                    )
+                    db.add(db_chunk)
 
     db.commit()
 
