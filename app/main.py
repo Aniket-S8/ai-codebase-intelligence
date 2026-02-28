@@ -9,6 +9,9 @@ from app.database import engine, get_db
 from app.chunker import extract_java_chunks
 from app import models
 
+from app.embeddings import generate_embedding
+from app.vector_store import create_index, add_embedding, save_index, load_index, search
+
 app = FastAPI()
 
 # Create DB tables
@@ -104,6 +107,58 @@ def upload_repository(
                     db.add(db_chunk)
 
     db.commit()
+
+@app.post("/build-index")
+def build_index(db: Session = Depends(get_db)):
+    chunks = db.query(models.CodeChunk).all()
+
+    if not chunks:
+        return {"message": "No chunks found"}
+
+    create_index()
+
+    for chunk in chunks:
+        embedding = generate_embedding(chunk.content)
+        add_embedding(embedding, chunk.id)
+
+    save_index()
+
+    return {"message": "FAISS index built", "chunks_indexed": len(chunks)}
+
+@app.post("/search")
+def search_code(query: str, db: Session = Depends(get_db)):
+    load_index()
+
+    query_embedding = generate_embedding(query)
+
+    search_results = search(query_embedding, top_k=5)
+
+    if not search_results:
+        return {"message": "No relevant chunks found"}
+
+    chunk_ids = [item["chunk_id"] for item in search_results]
+
+    chunks = db.query(models.CodeChunk).filter(
+        models.CodeChunk.id.in_(chunk_ids)
+    ).all()
+
+    # Map chunk_id to score
+    score_map = {item["chunk_id"]: item["score"] for item in search_results}
+
+    results = []
+
+    for chunk in chunks:
+        results.append({
+            "chunk_id": chunk.id,
+            "class_name": chunk.class_name,
+            "method_name": chunk.method_name,
+            "start_line": chunk.start_line,
+            "end_line": chunk.end_line,
+            "similarity_score": round(score_map.get(chunk.id, 0), 4),
+            "content": chunk.content[:500]
+        })
+
+    return {"results": results}
 
     # Cleanup
     os.remove(zip_path)
