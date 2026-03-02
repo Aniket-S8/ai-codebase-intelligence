@@ -28,6 +28,7 @@ models.Base.metadata.create_all(bind=engine)
 
 UPLOAD_DIR = "uploads"
 TEMP_DIR = "temp"
+SIMILARITY_THRESHOLD = 0.45
 
 
 # ============================
@@ -161,8 +162,15 @@ def search_code(query: str, db: Session = Depends(get_db)):
     query_embedding = generate_embedding(query)
     search_results = search(query_embedding, top_k=5)
 
-    if not search_results:
-        return {"message": "No relevant chunks found"}
+    filtered_results = [
+        item for item in search_results
+        if item["score"] >= SIMILARITY_THRESHOLD
+    ]
+
+    if not filtered_results:
+        return {"message": "No sufficiently relevant code found"}
+
+    search_results = filtered_results
 
     chunk_ids = [item["chunk_id"] for item in search_results]
 
@@ -247,8 +255,15 @@ def rag_query(request: RAGRequest, db: Session = Depends(get_db)):
     query_embedding = generate_embedding(request.query)
     search_results = search(query_embedding, top_k=5)
 
-    if not search_results:
-        return {"message": "No relevant chunks found"}
+    filtered_results = [
+        item for item in search_results
+        if item["score"] >= SIMILARITY_THRESHOLD
+    ]
+
+    if not filtered_results:
+        return {"message": "No sufficiently relevant code found"}
+
+    search_results = filtered_results
 
     chunk_ids = [item["chunk_id"] for item in search_results]
 
