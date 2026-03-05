@@ -179,6 +179,7 @@ def search_code(query: str, db: Session = Depends(get_db)):
     ).all()
 
     score_map = {item["chunk_id"]: item["score"] for item in search_results}
+    chunks.sort(key=lambda c: score_map.get(c.id, 0), reverse=True)
 
     results = []
 
@@ -202,6 +203,7 @@ def search_code(query: str, db: Session = Depends(get_db)):
 
 class RAGRequest(BaseModel):
     query: str
+    repo_id: int
     mode: str = "strict"  # strict or assistant
 
 
@@ -216,7 +218,8 @@ def build_prompt(query, chunks, mode):
     if mode == "strict":
         system_instruction = (
             "You are a code analysis assistant.\n"
-            "Explain the answer using ONLY facts explicitly visible in the provided code context.\n"
+            "Explain the answer using only information visible in the provided code context.\n"
+            "Describe the relevant method behavior clearly using natural language.\n"
             "Describe which class and method perform the action.\n"
             "Do NOT assume UI behavior, validation logic, or system behavior unless it appears directly in the code.\n"
             "Do NOT describe hypothetical behavior.\n"
@@ -253,7 +256,7 @@ def rag_query(request: RAGRequest, db: Session = Depends(get_db)):
     load_index()
 
     query_embedding = generate_embedding(request.query)
-    search_results = search(query_embedding, top_k=5)
+    search_results = search(query_embedding, top_k=4)
 
     filtered_results = [
         item for item in search_results
@@ -265,17 +268,32 @@ def rag_query(request: RAGRequest, db: Session = Depends(get_db)):
 
     search_results = filtered_results
 
-    chunk_ids = [item["chunk_id"] for item in search_results]
+    chunk_score_map = {item["chunk_id"]: item["score"] for item in search_results}
 
-    chunks = db.query(models.CodeChunk).filter(
-        models.CodeChunk.id.in_(chunk_ids)
-    ).all()
+    chunks = (
+        db.query(models.CodeChunk)
+        .join(models.File)
+        .filter(
+            models.CodeChunk.id.in_(chunk_score_map.keys()),
+            models.File.repo_id == request.repo_id
+        )
+        .all()
+    )
+
+    # Keep order
+    chunks.sort(key=lambda c: chunk_score_map.get(c.id, 0), reverse=True)
+
+    if not chunks:
+        return {"message": "No relevant chunks found in this repository"}
 
     prompt = build_prompt(request.query, chunks, request.mode)
     llm_response = generate_response(prompt)
 
     return {
         "mode": request.mode,
-        "retrieved_chunks": chunk_ids,
+        "retrieved_chunks": [
+            {"chunk_id": c.id, "class": c.class_name, "method": c.method_name}
+            for c in chunks
+        ],
         "answer": llm_response
     }
