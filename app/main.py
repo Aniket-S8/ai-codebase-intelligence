@@ -335,7 +335,13 @@ def rag_query(request: RAGRequest, db: Session = Depends(get_db)):
     return {
         "mode": request.mode,
         "retrieved_chunks": [
-            {"chunk_id": c.id, "class": c.class_name, "method": c.method_name}
+            {
+                "chunk_id": c.id,
+                "class": c.class_name,
+                "method": c.method_name,
+                "start_line": c.start_line,
+                "end_line": c.end_line
+            }
             for c in chunks
         ],
         "answer": llm_response
