@@ -18,12 +18,11 @@ from app.vector_store import (
     load_index,
     search
 )
-from app.llm_service import generate_response
 
+from app.llm_service import generate_response
 
 app = FastAPI()
 
-# Create DB tables
 models.Base.metadata.create_all(bind=engine)
 
 UPLOAD_DIR = "uploads"
@@ -37,7 +36,7 @@ SIMILARITY_THRESHOLD = 0.45
 
 @app.get("/")
 def root():
-    return {"message": "AI Codebase Intelligence System 🚀 (Phase 5)"}
+    return {"message": "AI Codebase Intelligence System 🚀 (Phase 7)"}
 
 
 # ============================
@@ -45,12 +44,10 @@ def root():
 # ============================
 
 @app.post("/upload-repository")
-def upload_repository(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db)
-):
+def upload_repository(file: UploadFile = File(...), db: Session = Depends(get_db)):
+
     if not file.filename.endswith(".zip"):
-        raise HTTPException(status_code=400, detail="Only .zip files are allowed")
+        raise HTTPException(status_code=400, detail="Only .zip files allowed")
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     os.makedirs(TEMP_DIR, exist_ok=True)
@@ -80,12 +77,14 @@ def upload_repository(
     repo_path = os.path.join(UPLOAD_DIR, str(repo.id))
     shutil.move(temp_extract_path, repo_path)
 
-    # Scan and register Java files
     for root_dir, dirs, files in os.walk(repo_path):
+
         dirs[:] = [d for d in dirs if d not in [".git", "node_modules", "target", "__pycache__"]]
 
         for filename in files:
+
             if filename.endswith(".java"):
+
                 full_path = os.path.join(root_dir, filename)
                 relative_path = os.path.relpath(full_path, repo_path)
                 file_size = os.path.getsize(full_path)
@@ -107,6 +106,7 @@ def upload_repository(
                 chunks = extract_java_chunks(content)
 
                 for chunk in chunks:
+
                     db_chunk = models.CodeChunk(
                         content=chunk["content"],
                         class_name=chunk["class_name"],
@@ -115,6 +115,7 @@ def upload_repository(
                         end_line=chunk["end_line"],
                         file_id=db_file.id
                     )
+
                     db.add(db_chunk)
 
     db.commit()
@@ -132,6 +133,7 @@ def upload_repository(
 
 @app.post("/build-index")
 def build_index(db: Session = Depends(get_db)):
+
     chunks = db.query(models.CodeChunk).all()
 
     if not chunks:
@@ -152,14 +154,16 @@ def build_index(db: Session = Depends(get_db)):
 
 
 # ==================================
-# Semantic Search (Retrieval Only)
+# Semantic Search
 # ==================================
 
 @app.post("/search")
 def search_code(query: str, db: Session = Depends(get_db)):
+
     load_index()
 
     query_embedding = generate_embedding(query)
+
     search_results = search(query_embedding, top_k=5)
 
     filtered_results = [
@@ -170,20 +174,18 @@ def search_code(query: str, db: Session = Depends(get_db)):
     if not filtered_results:
         return {"message": "No sufficiently relevant code found"}
 
-    search_results = filtered_results
-
-    chunk_ids = [item["chunk_id"] for item in search_results]
+    score_map = {item["chunk_id"]: item["score"] for item in filtered_results}
 
     chunks = db.query(models.CodeChunk).filter(
-        models.CodeChunk.id.in_(chunk_ids)
+        models.CodeChunk.id.in_(score_map.keys())
     ).all()
 
-    score_map = {item["chunk_id"]: item["score"] for item in search_results}
     chunks.sort(key=lambda c: score_map.get(c.id, 0), reverse=True)
 
     results = []
 
     for chunk in chunks:
+
         results.append({
             "chunk_id": chunk.id,
             "class_name": chunk.class_name,
@@ -198,16 +200,25 @@ def search_code(query: str, db: Session = Depends(get_db)):
 
 
 # ============================
-# RAG Query (LLM Integrated)
+# Request Models
 # ============================
 
 class RAGRequest(BaseModel):
     query: str
     repo_id: int
-    mode: str = "strict"  # strict or assistant
+    mode: str = "strict"
 
+
+class RepoAnalysisRequest(BaseModel):
+    repo_id: int
+
+
+# ============================
+# Prompt Builders
+# ============================
 
 def build_prompt(query, chunks, mode):
+
     context = "\n\n".join(
         [
             f"Class: {c.class_name}\nMethod: {c.method_name}\nCode:\n{c.content}"
@@ -216,26 +227,22 @@ def build_prompt(query, chunks, mode):
     )
 
     if mode == "strict":
+
         system_instruction = (
             "You are a code analysis assistant.\n"
             "Explain the answer using only information visible in the provided code context.\n"
-            "Describe the relevant method behavior clearly using natural language.\n"
-            "Describe which class and method perform the action.\n"
-            "Do NOT assume UI behavior, validation logic, or system behavior unless it appears directly in the code.\n"
-            "Do NOT describe hypothetical behavior.\n"
-            "Do NOT use words like 'likely', 'presumably', or 'probably'.\n"
-            "If the answer is not explicitly visible in the code context, respond exactly with:\n"
+            "Describe the relevant method behavior clearly.\n"
+            "Do NOT assume UI behavior or missing system logic.\n"
+            "If the answer is not visible, respond exactly with:\n"
             "'The answer is not found in the provided code.'"
         )
+
     else:
+
         system_instruction = (
             "You are a helpful code assistant.\n"
             "Explain clearly what the provided code does.\n"
-            "Only describe behavior that is explicitly visible in the code.\n"
-            "Do not speculate about implementation details, program flow, data structures, "
-            "persistence, external components, or missing code.\n"
-            "Do not add commentary outside the scope of the question.\n"
-            "Keep the explanation concise and grounded in the visible methods."
+            "Only describe behavior that is explicitly visible in the code."
         )
 
     return f"""
@@ -251,11 +258,49 @@ Answer:
 """
 
 
+def build_repo_analysis_prompt(chunks):
+
+    context = "\n\n".join(
+        [
+            f"Class: {c.class_name}\nMethod: {c.method_name}\nCode:\n{c.content[:800]}"
+            for c in chunks
+        ]
+    )
+
+    return f"""
+You are a senior software engineer analyzing a codebase.
+
+Explain the architecture of the repository using ONLY information visible in the provided code.
+
+Rules:
+- Only describe classes and behaviors visible in the code
+- Do NOT assume frameworks, logging systems, or design patterns
+- Do NOT invent components that are not present
+- If a component's role is unclear, say "its purpose is not fully visible in the provided code"
+
+Focus on:
+- Main classes
+- Their responsibilities
+- How they interact
+
+Code context:
+{context}
+
+Architecture explanation:
+"""
+
+
+# ============================
+# RAG Query
+# ============================
+
 @app.post("/rag-query")
 def rag_query(request: RAGRequest, db: Session = Depends(get_db)):
+
     load_index()
 
     query_embedding = generate_embedding(request.query)
+
     search_results = search(query_embedding, top_k=4)
 
     filtered_results = [
@@ -266,9 +311,7 @@ def rag_query(request: RAGRequest, db: Session = Depends(get_db)):
     if not filtered_results:
         return {"message": "No sufficiently relevant code found"}
 
-    search_results = filtered_results
-
-    chunk_score_map = {item["chunk_id"]: item["score"] for item in search_results}
+    chunk_score_map = {item["chunk_id"]: item["score"] for item in filtered_results}
 
     chunks = (
         db.query(models.CodeChunk)
@@ -280,13 +323,13 @@ def rag_query(request: RAGRequest, db: Session = Depends(get_db)):
         .all()
     )
 
-    # Keep order
     chunks.sort(key=lambda c: chunk_score_map.get(c.id, 0), reverse=True)
 
     if not chunks:
         return {"message": "No relevant chunks found in this repository"}
 
     prompt = build_prompt(request.query, chunks, request.mode)
+
     llm_response = generate_response(prompt)
 
     return {
@@ -296,4 +339,47 @@ def rag_query(request: RAGRequest, db: Session = Depends(get_db)):
             for c in chunks
         ],
         "answer": llm_response
+    }
+
+
+# =================================
+# Repository Architecture Analysis
+# =================================
+
+@app.post("/analyze-repository")
+def analyze_repository(request: RepoAnalysisRequest, db: Session = Depends(get_db)):
+
+    repo = db.query(models.Repository).filter(
+        models.Repository.id == request.repo_id
+    ).first()
+
+    if not repo:
+        raise HTTPException(status_code=404, detail="Repository not found")
+
+    chunks = (
+        db.query(models.CodeChunk)
+        .join(models.File)
+        .filter(models.File.repo_id == request.repo_id)
+        .order_by(models.CodeChunk.class_name)
+        .all()
+    )
+
+    class_chunks = {}
+
+    for chunk in chunks:
+        if chunk.class_name not in class_chunks:
+            class_chunks[chunk.class_name] = chunk
+
+    representative_chunks = list(class_chunks.values())[:10]
+
+    if not chunks:
+        return {"message": "No code found in repository"}
+
+    prompt = build_repo_analysis_prompt(representative_chunks)
+
+    response = generate_response(prompt)
+
+    return {
+        "repository_id": request.repo_id,
+        "analysis": response
     }
